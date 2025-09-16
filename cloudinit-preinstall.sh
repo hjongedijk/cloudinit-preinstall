@@ -228,24 +228,23 @@ delete_user_silent() {
 
 step_delete_user_interactive() {
   title "🧹 [6] Remove a user (default YES)"
-  read -rp "🗑️  Delete a user now? [Y/n]: " ans
+  read -rp "🗑️  Delete a user now? (y/yes to confirm, anything else to skip): " ans
   case "${ans,,}" in
-    n|no)
-      USER_DELETE_RESULT="skipped"
+    y|yes)
+      read -rp "👤 Enter username: " u
+      if [ -z "$u" ]; then
+        echo "No username provided. Skipping."
+        USER_DELETE_RESULT="skipped"
+        return
+      fi
+      if delete_user_silent "$u"; then
+        USER_DELETE_RESULT="deleted $u"
+      else
+        USER_DELETE_RESULT="failed ($u)"
+      fi
       ;;
     *)
-      read -rp "👤 Enter username: " u
-      echo "About to delete '${u}'. Confirm (y/yes):"
-      read -rp "> " c
-      if [[ "${c,,}" =~ ^(y|yes)$ ]]; then
-        if delete_user_silent "$u"; then
-          USER_DELETE_RESULT="deleted $u"
-        else
-          USER_DELETE_RESULT="failed ($u)"
-        fi
-      else
-        USER_DELETE_RESULT="skipped"
-      fi
+      USER_DELETE_RESULT="skipped"
       ;;
   esac
 }
@@ -374,6 +373,24 @@ step_cloudinit_and_apt_clean() {
 }
 
 # ------------------------------
+# Shutdown prompt (menu option & post-run) 📴
+# ------------------------------
+step_shutdown_prompt() {
+  read -rp "⚡ Do you want to shutdown now? (y/yes to confirm): " SHUT_ANS
+  case "${SHUT_ANS,,}" in
+    y|yes)
+      echo "📴 Shutting down in 5 seconds..."
+      sleep 5
+      shutdown -h now >/dev/null 2>&1 || true
+      exit 0
+      ;;
+    *)
+      echo "⏸️  Skipping shutdown. Returning to menu."
+      ;;
+  esac
+}
+
+# ------------------------------
 # Run-all 🧩
 # ------------------------------
 run_all_steps() {
@@ -422,9 +439,8 @@ run_all_steps() {
 
   printf "%s📝 Note:%s Do not forget to %sadd user, password, ip=dhcp in cloud-init Proxmox and regenerate the image.%s\n\n" "$BOLD" "$RESET" "$BOLD" "$RESET"
 
-  info "System will now power off in 5 seconds... 📴"
-  sleep 5
-  shutdown -h now
+  # Explicit yes/no shutdown prompt; do not redraw menu if shutting down.
+  step_shutdown_prompt
 }
 
 # ------------------------------
@@ -434,7 +450,7 @@ show_menu() {
   cat <<MENU
 
 ${BOLD}${CYAN}=== Debian Install Script ===${RESET}
-${GREEN}1) 🚀 Run ALL steps (recommended; powers off at end)${RESET}
+${GREEN}1) 🚀 Run ALL steps (with summary; optional shutdown)${RESET}
 ${BLUE}2) 🔄 Update & Upgrade System${RESET}
 ${BLUE}3) 📦 Install base packages${RESET}
 ${BLUE}4) 🔐 Set root password${RESET}
@@ -449,7 +465,8 @@ ${BLUE}12) 👥 Set Docker access${RESET}
 ${BLUE}13) 📁 Install Filebrowser bundle${RESET}
 ${BLUE}14) 📊 Install Monitoring bundle${RESET}
 ${BLUE}15) 🧽 Cloud-init cleanup & apt clean${RESET}
-${RED}16) ❌ Exit${RESET}
+${RED}16) 📴 Shutdown system (asks y/yes to confirm)${RESET}
+${RED}17) ❌ Exit${RESET}
 ${BOLD}${CYAN}=============================${RESET}
 MENU
 }
@@ -459,7 +476,7 @@ MENU
 # ------------------------------
 while true; do
   show_menu
-  read -rp "👉 Choose an option [1-16]: " CHOICE
+  read -rp "👉 Choose an option [1-17]: " CHOICE
   case "${CHOICE}" in
     1)  run_all_steps ;;
     2)  step_update_upgrade; press_enter ;;
@@ -476,7 +493,8 @@ while true; do
     13) step_filebrowser_bundle; press_enter ;;
     14) step_monitoring_bundle; press_enter ;;
     15) step_cloudinit_and_apt_clean; press_enter ;;
-    16) echo "👋 Bye!"; exit 0 ;;
+    16) step_shutdown_prompt ;;   # Will exit on y/yes
+    17) echo "👋 Bye!"; exit 0 ;;
     *)  err "Invalid choice." ;;
   esac
 done
