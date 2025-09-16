@@ -89,29 +89,7 @@ step_ssh_config() {
   echo "✓ SSH configured and restarted."
 }
 
-step_timezone() {
-  echo "[5] Set Timezone to Europe/Amsterdam..."
-  timedatectl set-timezone Europe/Amsterdam
-  echo "✓ Timezone set."
-}
-
-step_unzip_qga_getty() {
-  echo "[6] Install Zip/Unzip + QEMU Guest Agent and enable getty@tty1..."
-  apt-get update
-  apt-get install -y zip unzip qemu-guest-agent
-  systemctl enable --now qemu-guest-agent
-  systemctl enable --now getty@tty1.service
-  echo "✓ Installed and enabled: zip/unzip, qemu-guest-agent, getty@tty1."
-}
-
-step_python_tools() {
-  echo "[7] Install Python, pip, and dev tools..."
-  apt-get update
-  apt-get install -y python3 python3-pip python3-venv build-essential git curl
-  echo "✓ Python and tools installed."
-}
-
-# --- User deletion (placed before Docker install) ---
+# --- User deletion (now right after SSH config) ---
 
 delete_user_silent() {
   # $1 = username to delete
@@ -157,10 +135,15 @@ delete_user_silent() {
 }
 
 step_delete_user_interactive() {
-  echo "[8] Remove a user (optional)"
-  read -rp "Do you want to delete a user now? (y/N): " DEL_ANS
+  echo "[5] Remove a user (default: YES)"
+  read -rp "Do you want to delete a user now? [Y/n]: " DEL_ANS
   case "${DEL_ANS,,}" in
-    y|yes)
+    n|no)
+      echo "Skipping user deletion."
+      USER_DELETE_RESULT="skipped"
+      USER_DELETED_FLAG=0
+      ;;
+    *)
       read -rp "Enter the username to delete: " USER_TO_DEL
       if [ -z "${USER_TO_DEL}" ]; then
         echo "No username given. Skipping user deletion."
@@ -184,15 +167,30 @@ step_delete_user_interactive() {
         USER_DELETED_FLAG=0
       fi
       ;;
-    *)
-      echo "Skipping user deletion."
-      USER_DELETE_RESULT="skipped"
-      USER_DELETED_FLAG=0
-      ;;
   esac
 }
 
-# --- Docker install & config ---
+step_timezone() {
+  echo "[6] Set Timezone to Europe/Amsterdam..."
+  timedatectl set-timezone Europe/Amsterdam
+  echo "✓ Timezone set."
+}
+
+step_unzip_qga_getty() {
+  echo "[7] Install Zip/Unzip + QEMU Guest Agent and enable getty@tty1..."
+  apt-get update
+  apt-get install -y zip unzip qemu-guest-agent
+  systemctl enable --now qemu-guest-agent
+  systemctl enable --now getty@tty1.service
+  echo "✓ Installed and enabled: zip/unzip, qemu-guest-agent, getty@tty1."
+}
+
+step_python_tools() {
+  echo "[8] Install Python, pip, and dev tools..."
+  apt-get update
+  apt-get install -y python3 python3-pip python3-venv build-essential git curl
+  echo "✓ Python and tools installed."
+}
 
 step_install_docker() {
   echo "[9] Install Docker..."
@@ -229,25 +227,17 @@ EOF
   echo "⚠️ WARNING: tcp://0.0.0.0:2375 is INSECURE (no TLS). Use only on trusted networks."
 }
 
-# --- Post-docker access: chmod only if a user was deleted, else ask a username & add to docker group, then chmod
+# Post-docker access:
+# - If a user WAS deleted earlier → ONLY chmod 666 /var/run/docker.sock
+# - Else → ask for a username, add to docker group, then chmod 666
 step_set_docker_access() {
   echo "[11] Set Docker access..."
-  # ensure the socket exists (service should be running)
-  if [ ! -S /var/run/docker.sock ]; then
-    echo "Docker socket not found at /var/run/docker.sock. Starting Docker..."
-    systemctl start docker || true
-    sleep 2
-  fi
-
   if [ "${USER_DELETED_FLAG}" -eq 1 ]; then
-    # User was deleted earlier: only chmod
     chmod 666 /var/run/docker.sock || true
     DOCKER_ACCESS_MODE="chmod_only"
-    DOCKER_ACCESS_USERNAME=""
     echo "✓ Docker socket permissions set to 666 (no user added to docker group due to prior deletion)."
   else
-    # Ask which user to grant docker group access
-    read -rp "Enter the username to grant Docker access (leave blank to skip group add): " DOCKER_USER
+    read -rp "Enter the username to grant Docker access (leave blank to skip): " DOCKER_USER
     if [ -n "${DOCKER_USER}" ]; then
       if id "${DOCKER_USER}" >/dev/null 2>&1; then
         usermod -aG docker "${DOCKER_USER}" || true
@@ -317,10 +307,10 @@ run_all_steps() {
   step_update_upgrade           # [2]
   step_set_root_password        # [3]
   step_ssh_config               # [4]
-  step_timezone                 # [5]
-  step_unzip_qga_getty          # [6]
-  step_python_tools             # [7]
-  step_delete_user_interactive  # [8] sets USER_DELETED_FLAG + USER_DELETE_RESULT
+  step_delete_user_interactive  # [5]
+  step_timezone                 # [6]
+  step_unzip_qga_getty          # [7]
+  step_python_tools             # [8]
   step_install_docker           # [9]
   step_configure_docker_tcp     # [10]
   step_set_docker_access        # [11]
@@ -334,6 +324,7 @@ run_all_steps() {
   echo "-----------------------------------------------------"
   echo "✔ System updated & upgraded"
   echo "✔ SSH configured: root login + password auth enabled"
+  echo "✔ User deletion step: ${USER_DELETE_RESULT}"
   echo "✔ Root password set/unlocked"
   echo "✔ Timezone set: Europe/Amsterdam"
   echo "✔ Installed: zip, unzip, qemu-guest-agent, getty@tty1"
@@ -347,13 +338,12 @@ run_all_steps() {
   fi
   echo "✔ Filebrowser deployed (docker compose in /opt/filebrowser)"
   echo "✔ Monitoring deployed (docker compose in /opt/monitoring)"
-  echo "✔ User deletion step: ${USER_DELETE_RESULT}"
   echo "✔ cloud-init cleaned, apt cache cleared"
   echo "====================================================="
   echo "⚠️  WARNING: Docker TCP (2375) is unsecured (no TLS)"
   echo "====================================================="
   echo
-  echo "Do not forget to set cloud-init user, password and ip=dhcp in Proxmox."
+  echo "Do not forget to add user, password, ip=dhcp in cloud-init Proxmox and regenerate the image."
   echo
   echo "System will now power off..."
   sleep 5
@@ -371,10 +361,10 @@ show_menu() {
 2) Update & Upgrade System
 3) Set root password (and unlock root)
 4) Configure SSH (root login + password auth)
-5) Set Timezone to Europe/Amsterdam
-6) Install Zip/Unzip + QEMU Guest Agent (+ enable getty@tty1)
-7) Install Python, pip & tools
-8) Remove a user (prompt, optional)           <-- runs BEFORE Docker steps
+5) Remove a user (prompt, default YES)
+6) Set Timezone to Europe/Amsterdam
+7) Install Zip/Unzip + QEMU Guest Agent (+ enable getty@tty1)
+8) Install Python, pip & tools
 9) Install Docker
 10) Configure Docker Daemon (TCP 2375)
 11) Set Docker access (add user to 'docker' or chmod-only)
@@ -394,10 +384,10 @@ while true; do
     2)  step_update_upgrade; press_enter ;;
     3)  step_set_root_password; press_enter ;;
     4)  step_ssh_config; press_enter ;;
-    5)  step_timezone; press_enter ;;
-    6)  step_unzip_qga_getty; press_enter ;;
-    7)  step_python_tools; press_enter ;;
-    8)  step_delete_user_interactive; press_enter ;;
+    5)  step_delete_user_interactive; press_enter ;;
+    6)  step_timezone; press_enter ;;
+    7)  step_unzip_qga_getty; press_enter ;;
+    8)  step_python_tools; press_enter ;;
     9)  step_install_docker; press_enter ;;
     10) step_configure_docker_tcp; press_enter ;;
     11) step_set_docker_access; press_enter ;;
