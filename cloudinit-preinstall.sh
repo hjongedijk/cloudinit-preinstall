@@ -29,7 +29,62 @@ ensure_unzip_curl() {
 }
 
 # ------------------------------
-# EARLY PATH: Not root -> only set root password + SSH, then exit with instructions
+# Session helpers
+# ------------------------------
+
+# "Active session user" = the real logged-in user (TTY/SSH), not just who runs bash
+active_session_user() {
+  # Prefer logname; fallback to who am i; fallback to SUDO_USER
+  local u
+  u="$(logname 2>/dev/null || true)"
+  if [ -z "$u" ]; then
+    u="$(who am i 2>/dev/null | awk '{print $1}' | head -n1)"
+  fi
+  if [ -z "$u" ] && [ -n "${SUDO_USER-}" ]; then
+    u="$SUDO_USER"
+  fi
+  echo "$u"
+}
+
+list_user_sessions() {
+  local u="$1"
+  echo "Active sessions for '$u':"
+  loginctl list-sessions --no-legend 2>/dev/null | awk -v user="$u" '$3==user{print "  loginctl session: "$1" ("$2")"}' || true
+  who 2>/dev/null | awk -v user="$u" '$1==user{print "  who: "$1" "$2" "$5}' || true
+}
+
+user_has_active_sessions() {
+  local u="$1"
+  if loginctl list-sessions --no-legend 2>/dev/null | awk -v user="$u" '$3==user{found=1} END{exit !found}'; then
+    return 0
+  fi
+  if who 2>/dev/null | awk -v user="$u" '$1==user{found=1} END{exit !found}'; then
+    return 0
+  fi
+  return 1
+}
+
+next_steps_and_exit() {
+  local ip; ip="$(get_eth0_ip)"; [ -z "$ip" ] && ip="<your_server_ip>"
+  cat <<EOF
+
+=====================================================
+NEXT STEPS
+-----------------------------------------------------
+1) Log out and log in as root using the password you just set:
+   ssh root@${ip}
+
+2) Re-run the installer:
+   ${INSTALL_ONE_LINER}
+
+3) Choose option 1 (Run ALL) or proceed step-by-step.
+=====================================================
+EOF
+  exit 0
+}
+
+# ------------------------------
+# EARLY PATH: Not root -> only set root password + SSH, then exit
 # ------------------------------
 if [ "$(id -u)" -ne 0 ]; then
   echo "⚠️  Running as non-root. Minimal setup: set root password + SSH config."
@@ -58,26 +113,7 @@ if [ "$(id -u)" -ne 0 ]; then
   sudo systemctl restart ssh || sudo systemctl restart sshd || true
   echo "✓ SSH configured: root login + password auth enabled."
 
-  IP="$(get_eth0_ip)"
-  if [ -z "$IP" ]; then
-    IP="<your_server_ip>"
-  fi
-
-  cat <<EOF
-
-=====================================================
-NEXT STEPS
------------------------------------------------------
-1) Log out and log in as root using the password you just set:
-   ssh root@${IP}
-
-2) Re-run the installer:
-   ${INSTALL_ONE_LINER}
-
-3) Choose option 1 (Run ALL) or proceed step-by-step.
-=====================================================
-EOF
-  exit 0
+  next_steps_and_exit
 fi
 
 # ------------------------------
@@ -127,54 +163,12 @@ step_ssh_config() {
   echo "✓ SSH configured and restarted."
 }
 
-# --- Session helpers for deletion ---
-list_user_sessions() {
-  # Print TTYs/sessions for user (loginctl and who)
-  local u="$1"
-  echo "Active sessions for '$u':"
-  loginctl list-sessions --no-legend 2>/dev/null | awk -v user="$u" '$3==user{print "  loginctl session: "$1" ("$2")"}' || true
-  who 2>/dev/null | awk -v user="$u" '$1==user{print "  who: "$1" "$2" "$5}' || true
-}
-
-user_has_active_sessions() {
-  local u="$1"
-  if loginctl list-sessions --no-legend 2>/dev/null | awk -v user="$u" '$3==user{found=1} END{exit !found}'; then
-    return 0
-  fi
-  if who 2>/dev/null | awk -v user="$u" '$1==user{found=1} END{exit !found}'; then
-    return 0
-  fi
-  return 1
-}
-
-force_logout_user() {
-  local u="$1"
-  echo "Forcing logout of user '$u'..."
-  loginctl terminate-user "$u" 2>/dev/null || true
-  pkill -KILL -u "$u" 2>/dev/null || true
-
-  # Wait a few seconds for sessions to end
-  local i
-  for i in {1..5}; do
-    if user_has_active_sessions "$u"; then
-      sleep 1
-    else
-      break
-    fi
-  done
-
-  if user_has_active_sessions "$u"; then
-    echo "⚠️  Some sessions for '$u' may still be present, proceeding with deletion."
-  else
-    echo "✓ Sessions for '$u' terminated."
-  fi
-}
-
 # --- User deletion (after SSH config) ---
 
 delete_user_silent() {
   local USER_TO_DEL="$1"
   local USER_HOME
+  local ACTIVE_U; ACTIVE_U="$(active_session_user)"
 
   if [ -z "$USER_TO_DEL" ] || [ "$USER_TO_DEL" = "root" ]; then
     echo "Skipping invalid username for deletion."
@@ -185,14 +179,23 @@ delete_user_silent() {
     return 0
   fi
 
-  # Show active sessions and force logout (default YES)
+  # If the user to delete is the same as the active session user and has active sessions -> print NEXT STEPS and exit
+  if [ -n "$ACTIVE_U" ] && [ "$USER_TO_DEL" = "$ACTIVE_U" ] && user_has_active_sessions "$USER_TO_DEL"; then
+    echo "⚠️  The user '$USER_TO_DEL' is the active session user. Not deleting within this session."
+    next_steps_and_exit
+  fi
+
+  # For other users: handle active sessions interactively
   if user_has_active_sessions "$USER_TO_DEL"; then
     echo "⚠️  Detected active sessions for '$USER_TO_DEL'."
     list_user_sessions "$USER_TO_DEL"
     read -rp "Terminate sessions now? [Y/n]: " KILLANS
     case "${KILLANS,,}" in
       n|no) echo "Skipping deletion because sessions are active."; return 1 ;;
-      *)    force_logout_user "$USER_TO_DEL" ;;
+      *)
+        loginctl terminate-user "$USER_TO_DEL" 2>/dev/null || true
+        pkill -KILL -u "$USER_TO_DEL" 2>/dev/null || true
+        ;;
     esac
   fi
 
@@ -200,9 +203,7 @@ delete_user_silent() {
   echo "Deleting user '$USER_TO_DEL' (HOME: ${USER_HOME:-N/A})..."
   if userdel -r "$USER_TO_DEL"; then
     crontab -r -u "$USER_TO_DEL" 2>/dev/null || true
-    if [ -n "${USER_HOME:-}" ] && [ -d "$USER_HOME" ]; then
-      rm -rf --one-file-system "$USER_HOME"
-    fi
+    [ -n "${USER_HOME:-}" ] && [ -d "$USER_HOME" ] && rm -rf --one-file-system "$USER_HOME"
     rm -f "/var/mail/$USER_TO_DEL" 2>/dev/null || true
     rm -rf "/var/spool/cron/crontabs/$USER_TO_DEL" 2>/dev/null || true
     echo "✓ User '$USER_TO_DEL' removed and leftovers cleaned."
@@ -433,7 +434,7 @@ show_menu() {
 2) Update & Upgrade System
 3) Set root password (and unlock root)
 4) Configure SSH (root login + password auth)
-5) Remove a user (prompt, default YES; kills active sessions)
+5) Remove a user (default YES; if target is your active session -> print NEXT STEPS and exit)
 6) Set Timezone to Europe/Amsterdam
 7) Install Zip/Unzip + QEMU Guest Agent (+ enable getty@tty1)
 8) Install Python, pip & tools
