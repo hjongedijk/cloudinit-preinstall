@@ -19,13 +19,13 @@ bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/s
 ```
 <sub>(Source: [Proxmox VE Helper-Scripts](https://community-scripts.github.io/ProxmoxVE/scripts?id=debian-vm&category=Operating+Systems))</sub>
 
+---
+
 **Debian 13**
 ```bash
 bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/scripts/debian-13-vm.sh)"
 ```
 <sub>(Source: [Proxmox VE Helper-Scripts](https://community-scripts.github.io/ProxmoxVE/scripts?id=debian-13-vm))</sub>
-
-> These community scripts create a VM with Proxmox-friendly defaults.
 
 ---
 
