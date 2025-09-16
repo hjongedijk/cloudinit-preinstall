@@ -19,6 +19,37 @@ press_enter() {
   read -rp "Press ENTER to continue..." _ || true
 }
 
+# Track outcomes for the overview
+USER_DELETE_RESULT="skipped"
+USER_DELETED_FLAG=0
+DOCKER_ACCESS_USERNAME=""
+DOCKER_ACCESS_MODE=""   # "chmod_only" or "group+chmod"
+
+# ------------------------------
+# Helpers
+# ------------------------------
+
+# Determine the real login user (useful when running via sudo su -)
+current_login_user() {
+  local u
+  u="$(logname 2>/dev/null || true)"
+  if [ -z "$u" ] && [ -n "${SUDO_USER-}" ]; then
+    u="$SUDO_USER"
+  fi
+  echo "$u"
+}
+
+ensure_unzip_curl() {
+  if ! command -v unzip >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y unzip zip
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y curl
+  fi
+}
+
 # ------------------------------
 # Functions (steps)
 # ------------------------------
@@ -46,7 +77,7 @@ step_set_root_password() {
 step_ssh_config() {
   echo "[4] Configure SSH (PermitRootLogin yes, PasswordAuthentication yes)..."
   SSH_FILE="/etc/ssh/sshd_config"
-  # Comment out any existing conflicting lines to avoid duplicates
+  # Comment out existing conflicting lines
   sed -i 's/^[[:space:]]*PermitRootLogin[[:space:]].*/#&/' "$SSH_FILE" || true
   sed -i 's/^[[:space:]]*PasswordAuthentication[[:space:]].*/#&/' "$SSH_FILE" || true
   # Append desired settings
@@ -80,8 +111,91 @@ step_python_tools() {
   echo "✓ Python and tools installed."
 }
 
+# --- User deletion (placed before Docker install) ---
+
+delete_user_silent() {
+  # $1 = username to delete
+  local USER_TO_DEL="$1"
+  local USER_HOME
+  local CURR
+  CURR="$(current_login_user)"
+
+  if [ -z "$USER_TO_DEL" ] || [ "$USER_TO_DEL" = "root" ]; then
+    echo "Skipping invalid username for deletion."
+    return 0
+  fi
+
+  # Don't delete the currently logged-in user
+  if [ -n "$CURR" ] && [ "$USER_TO_DEL" = "$CURR" ]; then
+    echo "Refusing to delete the currently logged-in user: '$USER_TO_DEL'."
+    echo "Log in as a different user or via console to remove this account."
+    return 1
+  fi
+
+  if ! id "$USER_TO_DEL" >/dev/null 2>&1; then
+    echo "User '$USER_TO_DEL' does not exist. Skipping."
+    return 0
+  fi
+
+  USER_HOME="$(getent passwd "$USER_TO_DEL" | cut -d: -f6)"
+  echo "Deleting user '$USER_TO_DEL' (HOME: ${USER_HOME:-N/A})..."
+  loginctl terminate-user "$USER_TO_DEL" 2>/dev/null || true
+  pkill -u "$USER_TO_DEL" 2>/dev/null || true
+  if userdel -r "$USER_TO_DEL"; then
+    crontab -r -u "$USER_TO_DEL" 2>/dev/null || true
+    if [ -n "${USER_HOME:-}" ] && [ -d "$USER_HOME" ]; then
+      rm -rf --one-file-system "$USER_HOME"
+    fi
+    rm -f "/var/mail/$USER_TO_DEL" 2>/dev/null || true
+    rm -rf "/var/spool/cron/crontabs/$USER_TO_DEL" 2>/dev/null || true
+    echo "✓ User '$USER_TO_DEL' removed and leftovers cleaned."
+    return 0
+  else
+    echo "❌ Failed to delete '$USER_TO_DEL'. Check running processes or mounts."
+    return 1
+  fi
+}
+
+step_delete_user_interactive() {
+  echo "[8] Remove a user (optional)"
+  read -rp "Do you want to delete a user now? (y/N): " DEL_ANS
+  case "${DEL_ANS,,}" in
+    y|yes)
+      read -rp "Enter the username to delete: " USER_TO_DEL
+      if [ -z "${USER_TO_DEL}" ]; then
+        echo "No username given. Skipping user deletion."
+        USER_DELETE_RESULT="skipped"
+        USER_DELETED_FLAG=0
+        return 0
+      fi
+      echo "About to delete '${USER_TO_DEL}'. Type YES to confirm:"
+      read -rp "> " CONFIRM
+      if [ "${CONFIRM}" = "YES" ]; then
+        if delete_user_silent "$USER_TO_DEL"; then
+          USER_DELETE_RESULT="executed (deleted: ${USER_TO_DEL})"
+          USER_DELETED_FLAG=1
+        else
+          USER_DELETE_RESULT="failed"
+          USER_DELETED_FLAG=0
+        fi
+      else
+        echo "User deletion cancelled."
+        USER_DELETE_RESULT="skipped"
+        USER_DELETED_FLAG=0
+      fi
+      ;;
+    *)
+      echo "Skipping user deletion."
+      USER_DELETE_RESULT="skipped"
+      USER_DELETED_FLAG=0
+      ;;
+  esac
+}
+
+# --- Docker install & config ---
+
 step_install_docker() {
-  echo "[8] Install Docker..."
+  echo "[9] Install Docker..."
   apt-get update
   apt-get install -y ca-certificates curl gnupg lsb-release
   install -m 0755 -d /etc/apt/keyrings
@@ -95,7 +209,7 @@ step_install_docker() {
 }
 
 step_configure_docker_tcp() {
-  echo "[9] Configure Docker daemon to listen on TCP 2375..."
+  echo "[10] Configure Docker daemon to listen on TCP 2375..."
   mkdir -p /etc/docker
   cat > /etc/docker/daemon.json <<'EOF'
 {
@@ -115,19 +229,45 @@ EOF
   echo "⚠️ WARNING: tcp://0.0.0.0:2375 is INSECURE (no TLS). Use only on trusted networks."
 }
 
-ensure_unzip_curl() {
-  if ! command -v unzip >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y unzip zip
+# --- Post-docker access: chmod only if a user was deleted, else ask a username & add to docker group, then chmod
+step_set_docker_access() {
+  echo "[11] Set Docker access..."
+  # ensure the socket exists (service should be running)
+  if [ ! -S /var/run/docker.sock ]; then
+    echo "Docker socket not found at /var/run/docker.sock. Starting Docker..."
+    systemctl start docker || true
+    sleep 2
   fi
-  if ! command -v curl >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y curl
+
+  if [ "${USER_DELETED_FLAG}" -eq 1 ]; then
+    # User was deleted earlier: only chmod
+    chmod 666 /var/run/docker.sock || true
+    DOCKER_ACCESS_MODE="chmod_only"
+    DOCKER_ACCESS_USERNAME=""
+    echo "✓ Docker socket permissions set to 666 (no user added to docker group due to prior deletion)."
+  else
+    # Ask which user to grant docker group access
+    read -rp "Enter the username to grant Docker access (leave blank to skip group add): " DOCKER_USER
+    if [ -n "${DOCKER_USER}" ]; then
+      if id "${DOCKER_USER}" >/dev/null 2>&1; then
+        usermod -aG docker "${DOCKER_USER}" || true
+        DOCKER_ACCESS_USERNAME="${DOCKER_USER}"
+        DOCKER_ACCESS_MODE="group+chmod"
+        echo "✓ User '${DOCKER_USER}' added to 'docker' group (re-login required)."
+      else
+        echo "User '${DOCKER_USER}' does not exist. Skipping group add."
+        DOCKER_ACCESS_MODE="chmod_only"
+      fi
+    else
+      DOCKER_ACCESS_MODE="chmod_only"
+    fi
+    chmod 666 /var/run/docker.sock || true
+    echo "✓ Docker socket permissions set to 666."
   fi
 }
 
 step_filebrowser_bundle() {
-  echo "[10] Install Filebrowser bundle..."
+  echo "[12] Install Filebrowser bundle..."
   ensure_unzip_curl
   mkdir -p /opt/filebrowser
   TARGET="/opt/filebrowser/filebrowser.zip"
@@ -140,7 +280,7 @@ step_filebrowser_bundle() {
 }
 
 step_monitoring_bundle() {
-  echo "[11] Install Monitoring bundle..."
+  echo "[13] Install Monitoring bundle..."
   ensure_unzip_curl
   mkdir -p /opt/monitoring
   TARGET="/opt/monitoring/monitoring.zip"
@@ -152,65 +292,8 @@ step_monitoring_bundle() {
   echo "✓ Monitoring downloaded, extracted, and started."
 }
 
-delete_user_silent() {
-  # $1 = username to delete (no interactive confirmations here)
-  local USER_TO_DEL="$1"
-  local USER_HOME
-  if [ -z "$USER_TO_DEL" ] || [ "$USER_TO_DEL" = "root" ]; then
-    echo "Skipping invalid username for deletion."
-    return 0
-  fi
-  if ! id "$USER_TO_DEL" >/dev/null 2>&1; then
-    echo "User '$USER_TO_DEL' does not exist. Skipping."
-    return 0
-  fi
-  USER_HOME="$(getent passwd "$USER_TO_DEL" | cut -d: -f6)"
-  echo "Deleting user '$USER_TO_DEL' (HOME: ${USER_HOME:-N/A})..."
-  loginctl terminate-user "$USER_TO_DEL" 2>/dev/null || true
-  pkill -u "$USER_TO_DEL" 2>/dev/null || true
-  if userdel -r "$USER_TO_DEL"; then
-    crontab -r -u "$USER_TO_DEL" 2>/dev/null || true
-    if [ -n "${USER_HOME:-}" ] && [ -d "$USER_HOME" ]; then
-      rm -rf --one-file-system "$USER_HOME"
-    fi
-    rm -f "/var/mail/$USER_TO_DEL" 2>/dev/null || true
-    rm -rf "/var/spool/cron/crontabs/$USER_TO_DEL" 2>/dev/null || true
-    echo "✓ User '$USER_TO_DEL' removed and leftovers cleaned."
-  else
-    echo "❌ Failed to delete '$USER_TO_DEL'. Check running processes or mounts."
-  fi
-}
-
-step_delete_user_interactive() {
-  echo "[12] Remove a user (optional)"
-  read -rp "Do you want to delete a user now? (y/N): " DEL_ANS
-  case "${DEL_ANS,,}" in
-    y|yes)
-      read -rp "Enter the username to delete: " USER_TO_DEL
-      if [ -z "${USER_TO_DEL}" ]; then
-        echo "No username given. Skipping user deletion."
-        return 1
-      fi
-      echo "About to delete '${USER_TO_DEL}'. Type YES to confirm:"
-      read -rp "> " CONFIRM
-      if [ "${CONFIRM}" = "YES" ]; then
-        delete_user_silent "$USER_TO_DEL"
-        return 0
-      else
-        echo "User deletion cancelled."
-        return 1
-      fi
-      ;;
-    *)
-      echo "Skipping user deletion."
-      return 1
-      ;;
-  esac
-}
-
 step_cloudinit_and_apt_clean() {
-  echo "[13] Cloud-init cleanup & apt clean..."
-  # cloud-init cleanup
+  echo "[14] Cloud-init cleanup & apt clean..."
   cloud-init clean --logs || true
   rm -rf /var/lib/cloud/* || true
   rm -f /etc/cloud/cloud.cfg.d/90_dpkg.cfg || true
@@ -219,7 +302,6 @@ step_cloudinit_and_apt_clean() {
   rm -f /etc/netplan/50-cloud-init.yaml || true
   cloud-init clean || true
 
-  # apt clean and remove whiptail/dialog if present
   apt-get -y autoremove --purge whiptail dialog || true
   apt-get -y autoremove || true
   apt-get clean || true
@@ -232,40 +314,37 @@ step_cloudinit_and_apt_clean() {
 # Run-all (option 1)
 # ------------------------------
 run_all_steps() {
-  local USER_DELETE_RESULT="skipped"
-
-  step_update_upgrade          # [2]
-  step_timezone                # [5]
-  step_ssh_config              # [4]
-  step_set_root_password       # [3]
-  step_unzip_qga_getty         # [6]
-  step_python_tools            # [7]
-  step_install_docker          # [8]
-  step_configure_docker_tcp    # [9]
-  step_filebrowser_bundle      # [10]
-  step_monitoring_bundle       # [11]
-
-  # User deletion (ask y/n, optional but included in Run ALL)
-  if step_delete_user_interactive; then
-    USER_DELETE_RESULT="executed"
-  else
-    USER_DELETE_RESULT="skipped"
-  fi
-
-  step_cloudinit_and_apt_clean # [13]
+  step_update_upgrade           # [2]
+  step_set_root_password        # [3]
+  step_ssh_config               # [4]
+  step_timezone                 # [5]
+  step_unzip_qga_getty          # [6]
+  step_python_tools             # [7]
+  step_delete_user_interactive  # [8] sets USER_DELETED_FLAG + USER_DELETE_RESULT
+  step_install_docker           # [9]
+  step_configure_docker_tcp     # [10]
+  step_set_docker_access        # [11]
+  step_filebrowser_bundle       # [12]
+  step_monitoring_bundle        # [13]
+  step_cloudinit_and_apt_clean  # [14]
 
   echo
   echo "====================================================="
   echo "✅ INSTALLATION OVERVIEW"
   echo "-----------------------------------------------------"
   echo "✔ System updated & upgraded"
-  echo "✔ Timezone set: Europe/Amsterdam"
   echo "✔ SSH configured: root login + password auth enabled"
   echo "✔ Root password set/unlocked"
+  echo "✔ Timezone set: Europe/Amsterdam"
   echo "✔ Installed: zip, unzip, qemu-guest-agent, getty@tty1"
   echo "✔ Installed: Python3, pip, dev tools"
   echo "✔ Installed: Docker CE + Compose plugins"
   echo "✔ Docker listening on: unix:///var/run/docker.sock, tcp://0.0.0.0:2375"
+  if [ "$DOCKER_ACCESS_MODE" = "group+chmod" ] && [ -n "$DOCKER_ACCESS_USERNAME" ]; then
+    echo "✔ Docker access: added '${DOCKER_ACCESS_USERNAME}' to 'docker' group + chmod 666 on socket"
+  else
+    echo "✔ Docker access: chmod 666 on socket (no user group add)"
+  fi
   echo "✔ Filebrowser deployed (docker compose in /opt/filebrowser)"
   echo "✔ Monitoring deployed (docker compose in /opt/monitoring)"
   echo "✔ User deletion step: ${USER_DELETE_RESULT}"
@@ -274,7 +353,7 @@ run_all_steps() {
   echo "⚠️  WARNING: Docker TCP (2375) is unsecured (no TLS)"
   echo "====================================================="
   echo
-  echo "Do not forget to set cloud-init user, password and ip=dhcp in proxmox."
+  echo "Do not forget to set cloud-init user, password and ip=dhcp in Proxmox."
   echo
   echo "System will now power off..."
   sleep 5
@@ -295,20 +374,21 @@ show_menu() {
 5) Set Timezone to Europe/Amsterdam
 6) Install Zip/Unzip + QEMU Guest Agent (+ enable getty@tty1)
 7) Install Python, pip & tools
-8) Install Docker
-9) Configure Docker Daemon (TCP 2375)
-10) Install Filebrowser bundle (docker compose)
-11) Install Monitoring bundle (docker compose)
-12) Remove a user (prompt, optional)
-13) Cloud-init cleanup & apt clean (also removes whiptail/dialog)
-14) Exit
+8) Remove a user (prompt, optional)           <-- runs BEFORE Docker steps
+9) Install Docker
+10) Configure Docker Daemon (TCP 2375)
+11) Set Docker access (add user to 'docker' or chmod-only)
+12) Install Filebrowser bundle (docker compose)
+13) Install Monitoring bundle (docker compose)
+14) Cloud-init cleanup & apt clean (also removes whiptail/dialog)
+15) Exit
 =========================================================
 MENU
 }
 
 while true; do
   show_menu
-  read -rp "Choose an option [1-14]: " CHOICE
+  read -rp "Choose an option [1-15]: " CHOICE
   case "${CHOICE}" in
     1)  run_all_steps ;;
     2)  step_update_upgrade; press_enter ;;
@@ -317,13 +397,14 @@ while true; do
     5)  step_timezone; press_enter ;;
     6)  step_unzip_qga_getty; press_enter ;;
     7)  step_python_tools; press_enter ;;
-    8)  step_install_docker; press_enter ;;
-    9)  step_configure_docker_tcp; press_enter ;;
-    10) step_filebrowser_bundle; press_enter ;;
-    11) step_monitoring_bundle; press_enter ;;
-    12) step_delete_user_interactive; press_enter ;;
-    13) step_cloudinit_and_apt_clean; press_enter ;;
-    14) echo "Bye!"; exit 0 ;;
+    8)  step_delete_user_interactive; press_enter ;;
+    9)  step_install_docker; press_enter ;;
+    10) step_configure_docker_tcp; press_enter ;;
+    11) step_set_docker_access; press_enter ;;
+    12) step_filebrowser_bundle; press_enter ;;
+    13) step_monitoring_bundle; press_enter ;;
+    14) step_cloudinit_and_apt_clean; press_enter ;;
+    15) echo "Bye!"; exit 0 ;;
     *)  echo "Invalid choice." ;;
   esac
 done
