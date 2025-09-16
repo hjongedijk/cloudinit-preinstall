@@ -2,21 +2,32 @@
 set -euo pipefail
 
 # =======================
-#  Simple color helpers
+#  Color & formatting
 # =======================
-RESET="\033[0m"
-BOLD="\033[1m"
-DIM="\033[2m"
-RED="\033[31m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-CYAN="\033[36m"
+# Detect if stdout is a TTY and supports colors; otherwise disable colors
+if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+  RESET=$'\e[0m'
+  BOLD=$'\e[1m'
+  DIM=$'\e[2m'
+  RED=$'\e[31m'
+  GREEN=$'\e[32m'
+  YELLOW=$'\e[33m'
+  CYAN=$'\e[36m'
+else
+  RESET=""
+  BOLD=""
+  DIM=""
+  RED=""
+  GREEN=""
+  YELLOW=""
+  CYAN=""
+fi
 
-info()    { printf "${CYAN}%s${RESET}\n" "$*"; }
-ok()      { printf "${GREEN}✓ %s${RESET}\n" "$*"; }
-warn()    { printf "${YELLOW}⚠️  %s${RESET}\n" "$*"; }
-err()     { printf "${RED}❌ %s${RESET}\n" "$*"; }
-title()   { printf "\n${BOLD}=== %s ===${RESET}\n" "$*"; }
+info()    { printf "%s%s%s\n"   "$CYAN"  "$*" "$RESET"; }
+ok()      { printf "%s✓ %s%s\n" "$GREEN" "$*" "$RESET"; }
+warn()    { printf "%s⚠️  %s%s\n" "$YELLOW" "$*" "$RESET"; }
+err()     { printf "%s❌ %s%s\n" "$RED"   "$*" "$RESET"; }
+title()   { printf "\n%s=== %s ===%s\n" "$BOLD" "$*" "$RESET"; }
 
 # --- Config: GitHub raw URL for re-run hint ---
 INSTALL_ONE_LINER='bash -c "$(curl -fsSL https://raw.githubusercontent.com/hjongedijk/cloudinit-preinstall/main/cloudinit-preinstall.sh)"'
@@ -68,7 +79,7 @@ user_has_active_sessions() {
 }
 
 logout_current_session() {
-  # Attempt to terminate the current TTY session safely
+  # Attempt to terminate the current TTY session safely (only if user confirms)
   local TTY_PATH TTY_BASENAME
   TTY_PATH="$(tty 2>/dev/null || true)"
   TTY_BASENAME="${TTY_PATH#/dev/}"
@@ -223,7 +234,7 @@ delete_user_silent() {
     return 1
   fi
 
-  # If target equals the active session user and sessions exist -> show NEXT STEPS and (optionally) logout, then exit
+  # If target equals the active session user and sessions exist -> show NEXT STEPS (optional logout), then exit
   if [ "$USER_TO_DEL" = "$ACTIVE_U" ] && user_has_active_sessions "$USER_TO_DEL"; then
     warn "The user '$USER_TO_DEL' is the active session user."
     next_steps_and_exit
@@ -401,32 +412,32 @@ run_all_steps() {
   step_cloudinit_and_apt_clean
 
   # Fancy colored overview
-  printf "\n${BOLD}=====================================================${RESET}\n"
-  printf "${BOLD}🚀 INSTALLATION OVERVIEW${RESET}\n"
-  printf "${BOLD}-----------------------------------------------------${RESET}\n"
-  printf "${GREEN}✔${RESET} System updated & upgraded\n"
-  printf "${GREEN}✔${RESET} Base packages installed (sudo curl wget git unzip zip tar htop net-tools build-essential tmux screen jq tree fail2ban)\n"
-  printf "${GREEN}✔${RESET} SSH configured: root login + password auth enabled\n"
-  printf "${GREEN}✔${RESET} User deletion step: ${BOLD}%s${RESET}\n" "$USER_DELETE_RESULT"
-  printf "${GREEN}✔${RESET} Root password set/unlocked\n"
-  printf "${GREEN}✔${RESET} Timezone set: Europe/Amsterdam\n"
-  printf "${GREEN}✔${RESET} Installed: zip, unzip, qemu-guest-agent, getty@tty1\n"
-  printf "${GREEN}✔${RESET} Installed: Python3, pip, dev tools\n"
-  printf "${GREEN}✔${RESET} Installed: Docker CE + Compose plugins\n"
-  printf "${GREEN}✔${RESET} Docker listening on: unix:///var/run/docker.sock, tcp://0.0.0.0:2375\n"
+  printf "\n%s=====================================================%s\n" "$BOLD" "$RESET"
+  printf "%s🚀 INSTALLATION OVERVIEW%s\n" "$BOLD" "$RESET"
+  printf "%s-----------------------------------------------------%s\n" "$BOLD" "$RESET"
+  printf "%s✔%s System updated & upgraded\n" "$GREEN" "$RESET"
+  printf "%s✔%s Base packages installed (sudo curl wget git unzip zip tar htop net-tools build-essential tmux screen jq tree fail2ban)\n" "$GREEN" "$RESET"
+  printf "%s✔%s SSH configured: root login + password auth enabled\n" "$GREEN" "$RESET"
+  printf "%s✔%s User deletion step: %s%s%s\n" "$GREEN" "$RESET" "$BOLD" "$USER_DELETE_RESULT" "$RESET"
+  printf "%s✔%s Root password set/unlocked\n" "$GREEN" "$RESET"
+  printf "%s✔%s Timezone set: Europe/Amsterdam\n" "$GREEN" "$RESET"
+  printf "%s✔%s Installed: zip, unzip, qemu-guest-agent, getty@tty1\n" "$GREEN" "$RESET"
+  printf "%s✔%s Installed: Python3, pip, dev tools\n" "$GREEN" "$RESET"
+  printf "%s✔%s Installed: Docker CE + Compose plugins\n" "$GREEN" "$RESET"
+  printf "%s✔%s Docker listening on: unix:///var/run/docker.sock, tcp://0.0.0.0:2375\n" "$GREEN" "$RESET"
   if [ "${DOCKER_ACCESS_MODE:-}" = "group+chmod" ] && [ -n "${DOCKER_ACCESS_USERNAME:-}" ]; then
-    printf "${GREEN}✔${RESET} Docker access: added '${BOLD}%s${RESET}' to 'docker' group + chmod 666 on socket\n" "$DOCKER_ACCESS_USERNAME"
+    printf "%s✔%s Docker access: added '%s%s%s' to 'docker' group + chmod 666 on socket\n" "$GREEN" "$RESET" "$BOLD" "$DOCKER_ACCESS_USERNAME" "$RESET"
   else
-    printf "${GREEN}✔${RESET} Docker access: chmod 666 on socket (no user group add)\n"
+    printf "%s✔%s Docker access: chmod 666 on socket (no user group add)\n" "$GREEN" "$RESET"
   fi
-  printf "${GREEN}✔${RESET} Filebrowser deployed (/opt/filebrowser)\n"
-  printf "${GREEN}✔${RESET} Monitoring deployed (/opt/monitoring)\n"
-  printf "${GREEN}✔${RESET} cloud-init cleaned, apt cache cleared\n"
-  printf "${BOLD}=====================================================${RESET}\n"
-  printf "${YELLOW}⚠️  WARNING:${RESET} Docker TCP (2375) is unsecured (no TLS)\n"
-  printf "${BOLD}=====================================================${RESET}\n\n"
+  printf "%s✔%s Filebrowser deployed (/opt/filebrowser)\n" "$GREEN" "$RESET"
+  printf "%s✔%s Monitoring deployed (/opt/monitoring)\n" "$GREEN" "$RESET"
+  printf "%s✔%s cloud-init cleaned, apt cache cleared\n" "$GREEN" "$RESET"
+  printf "%s=====================================================%s\n" "$BOLD" "$RESET"
+  printf "%s⚠️  WARNING:%s Docker TCP (2375) is unsecured (no TLS)\n" "$YELLOW" "$RESET"
+  printf "%s=====================================================%s\n\n" "$BOLD" "$RESET"
 
-  printf "${BOLD}Note:${RESET} Do not forget to ${BOLD}add user, password, ip=dhcp in cloud-init Proxmox and regenerate the image.${RESET}\n\n"
+  printf "%sNote:%s Do not forget to %sadd user, password, ip=dhcp in cloud-init Proxmox and regenerate the image.%s\n\n" "$BOLD" "$RESET" "$BOLD" "$RESET"
 
   info "System will now power off..."
   sleep 5
