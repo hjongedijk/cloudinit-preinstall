@@ -79,7 +79,7 @@ Runs full setup (via menu or run-all):
 - Docker TCP (2375) is **unsecured** — only use on trusted networks.  
 - After running, configure cloud-init in Proxmox (`user`, `password`, `ip=dhcp`) and **regenerate image**.  
 - After enabling **getty@tty1** you can safely remove the serial port and set Display → **Default (VNC console)**.  
-- ⚠️ **Security Reminder**: Always review and understand scripts before executing them on your server. Do not blindly run one-liners from the internet without inspection.  
+- **Security Reminder**: Always review and understand scripts before executing them on your server. Do not blindly run one-liners from the internet without inspection. 
 
 ---
 
