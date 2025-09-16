@@ -25,20 +25,6 @@ USER_DELETED_FLAG=0
 DOCKER_ACCESS_USERNAME=""
 DOCKER_ACCESS_MODE=""   # "chmod_only" or "group+chmod"
 
-# ------------------------------
-# Helpers
-# ------------------------------
-
-# Determine the real login user (useful when running via sudo su -)
-current_login_user() {
-  local u
-  u="$(logname 2>/dev/null || true)"
-  if [ -z "$u" ] && [ -n "${SUDO_USER-}" ]; then
-    u="$SUDO_USER"
-  fi
-  echo "$u"
-}
-
 ensure_unzip_curl() {
   if ! command -v unzip >/dev/null 2>&1; then
     apt-get update
@@ -51,7 +37,7 @@ ensure_unzip_curl() {
 }
 
 # ------------------------------
-# Functions (steps)
+# Steps
 # ------------------------------
 
 step_update_upgrade() {
@@ -77,10 +63,8 @@ step_set_root_password() {
 step_ssh_config() {
   echo "[4] Configure SSH (PermitRootLogin yes, PasswordAuthentication yes)..."
   SSH_FILE="/etc/ssh/sshd_config"
-  # Comment out existing conflicting lines
   sed -i 's/^[[:space:]]*PermitRootLogin[[:space:]].*/#&/' "$SSH_FILE" || true
   sed -i 's/^[[:space:]]*PasswordAuthentication[[:space:]].*/#&/' "$SSH_FILE" || true
-  # Append desired settings
   {
     echo "PermitRootLogin yes"
     echo "PasswordAuthentication yes"
@@ -89,25 +73,15 @@ step_ssh_config() {
   echo "✓ SSH configured and restarted."
 }
 
-# --- User deletion (now right after SSH config) ---
+# --- User deletion (after SSH config) ---
 
 delete_user_silent() {
-  # $1 = username to delete
   local USER_TO_DEL="$1"
   local USER_HOME
-  local CURR
-  CURR="$(current_login_user)"
 
   if [ -z "$USER_TO_DEL" ] || [ "$USER_TO_DEL" = "root" ]; then
     echo "Skipping invalid username for deletion."
     return 0
-  fi
-
-  # Don't delete the currently logged-in user
-  if [ -n "$CURR" ] && [ "$USER_TO_DEL" = "$CURR" ]; then
-    echo "Refusing to delete the currently logged-in user: '$USER_TO_DEL'."
-    echo "Log in as a different user or via console to remove this account."
-    return 1
   fi
 
   if ! id "$USER_TO_DEL" >/dev/null 2>&1; then
@@ -129,7 +103,7 @@ delete_user_silent() {
     echo "✓ User '$USER_TO_DEL' removed and leftovers cleaned."
     return 0
   else
-    echo "❌ Failed to delete '$USER_TO_DEL'. Check running processes or mounts."
+    echo "❌ Failed to delete '$USER_TO_DEL'."
     return 1
   fi
 }
@@ -151,21 +125,24 @@ step_delete_user_interactive() {
         USER_DELETED_FLAG=0
         return 0
       fi
-      echo "About to delete '${USER_TO_DEL}'. Type YES to confirm:"
+      echo "About to delete '${USER_TO_DEL}'. Confirm (y/yes):"
       read -rp "> " CONFIRM
-      if [ "${CONFIRM}" = "YES" ]; then
-        if delete_user_silent "$USER_TO_DEL"; then
-          USER_DELETE_RESULT="executed (deleted: ${USER_TO_DEL})"
-          USER_DELETED_FLAG=1
-        else
-          USER_DELETE_RESULT="failed"
+      case "${CONFIRM,,}" in
+        y|yes)
+          if delete_user_silent "$USER_TO_DEL"; then
+            USER_DELETE_RESULT="executed (deleted: ${USER_TO_DEL})"
+            USER_DELETED_FLAG=1
+          else
+            USER_DELETE_RESULT="failed"
+            USER_DELETED_FLAG=0
+          fi
+          ;;
+        *)
+          echo "User deletion cancelled."
+          USER_DELETE_RESULT="skipped"
           USER_DELETED_FLAG=0
-        fi
-      else
-        echo "User deletion cancelled."
-        USER_DELETE_RESULT="skipped"
-        USER_DELETED_FLAG=0
-      fi
+          ;;
+      esac
       ;;
   esac
 }
@@ -224,12 +201,9 @@ EOF
   systemctl enable --now docker
   systemctl restart docker
   echo "✓ Docker configured and restarted."
-  echo "⚠️ WARNING: tcp://0.0.0.0:2375 is INSECURE (no TLS). Use only on trusted networks."
+  echo "⚠️ WARNING: tcp://0.0.0.0:2375 is INSECURE (no TLS)."
 }
 
-# Post-docker access:
-# - If a user WAS deleted earlier → ONLY chmod 666 /var/run/docker.sock
-# - Else → ask for a username, add to docker group, then chmod 666
 step_set_docker_access() {
   echo "[11] Set Docker access..."
   if [ "${USER_DELETED_FLAG}" -eq 1 ]; then
@@ -260,11 +234,7 @@ step_filebrowser_bundle() {
   echo "[12] Install Filebrowser bundle..."
   ensure_unzip_curl
   mkdir -p /opt/filebrowser
-  TARGET="/opt/filebrowser/filebrowser.zip"
-  if ! curl -fL "$FILEBROWSER_URL" -o "$TARGET"; then
-    echo "❌ Download failed from: $FILEBROWSER_URL"
-    return 0
-  fi
+  curl -fL "$FILEBROWSER_URL" -o /opt/filebrowser/filebrowser.zip
   (cd /opt/filebrowser && unzip -o filebrowser.zip && rm -f filebrowser.zip && docker compose up -d)
   echo "✓ Filebrowser downloaded, extracted, and started."
 }
@@ -273,11 +243,7 @@ step_monitoring_bundle() {
   echo "[13] Install Monitoring bundle..."
   ensure_unzip_curl
   mkdir -p /opt/monitoring
-  TARGET="/opt/monitoring/monitoring.zip"
-  if ! curl -fL "$MONITOR_URL" -o "$TARGET"; then
-    echo "❌ Download failed from: $MONITOR_URL"
-    return 0
-  fi
+  curl -fL "$MONITOR_URL" -o /opt/monitoring/monitoring.zip
   (cd /opt/monitoring && unzip -o monitoring.zip && rm -f monitoring.zip && docker compose up -d)
   echo "✓ Monitoring downloaded, extracted, and started."
 }
@@ -291,32 +257,30 @@ step_cloudinit_and_apt_clean() {
   rm -f /var/lib/dbus/machine-id || true
   rm -f /etc/netplan/50-cloud-init.yaml || true
   cloud-init clean || true
-
   apt-get -y autoremove --purge whiptail dialog || true
   apt-get -y autoremove || true
   apt-get clean || true
   rm -rf /var/lib/apt/lists/* || true
-
   echo "✓ cloud-init cleaned and apt cache purged."
 }
 
 # ------------------------------
-# Run-all (option 1)
+# Run-all
 # ------------------------------
 run_all_steps() {
-  step_update_upgrade           # [2]
-  step_set_root_password        # [3]
-  step_ssh_config               # [4]
-  step_delete_user_interactive  # [5]
-  step_timezone                 # [6]
-  step_unzip_qga_getty          # [7]
-  step_python_tools             # [8]
-  step_install_docker           # [9]
-  step_configure_docker_tcp     # [10]
-  step_set_docker_access        # [11]
-  step_filebrowser_bundle       # [12]
-  step_monitoring_bundle        # [13]
-  step_cloudinit_and_apt_clean  # [14]
+  step_update_upgrade
+  step_set_root_password
+  step_ssh_config
+  step_delete_user_interactive
+  step_timezone
+  step_unzip_qga_getty
+  step_python_tools
+  step_install_docker
+  step_configure_docker_tcp
+  step_set_docker_access
+  step_filebrowser_bundle
+  step_monitoring_bundle
+  step_cloudinit_and_apt_clean
 
   echo
   echo "====================================================="
@@ -336,8 +300,8 @@ run_all_steps() {
   else
     echo "✔ Docker access: chmod 666 on socket (no user group add)"
   fi
-  echo "✔ Filebrowser deployed (docker compose in /opt/filebrowser)"
-  echo "✔ Monitoring deployed (docker compose in /opt/monitoring)"
+  echo "✔ Filebrowser deployed (/opt/filebrowser)"
+  echo "✔ Monitoring deployed (/opt/monitoring)"
   echo "✔ cloud-init cleaned, apt cache cleared"
   echo "====================================================="
   echo "⚠️  WARNING: Docker TCP (2375) is unsecured (no TLS)"
@@ -351,7 +315,7 @@ run_all_steps() {
 }
 
 # ------------------------------
-# Menu (no whiptail)
+# Menu
 # ------------------------------
 show_menu() {
   cat <<MENU
@@ -370,7 +334,7 @@ show_menu() {
 11) Set Docker access (add user to 'docker' or chmod-only)
 12) Install Filebrowser bundle (docker compose)
 13) Install Monitoring bundle (docker compose)
-14) Cloud-init cleanup & apt clean (also removes whiptail/dialog)
+14) Cloud-init cleanup & apt clean
 15) Exit
 =========================================================
 MENU
