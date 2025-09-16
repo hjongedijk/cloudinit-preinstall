@@ -32,7 +32,7 @@ ensure_unzip_curl() {
 # EARLY PATH: Not root -> only set root password + SSH, then exit with instructions
 # ------------------------------
 if [ "$(id -u)" -ne 0 ]; then
-  echo "⚠️  Running as non-root. Performing minimal setup: set root password + SSH config."
+  echo "⚠️  Running as non-root. Minimal setup: set root password + SSH config."
   echo "    After that, log in as root and re-run the full installer."
 
   # --- Set root password (via sudo) ---
@@ -127,6 +127,49 @@ step_ssh_config() {
   echo "✓ SSH configured and restarted."
 }
 
+# --- Session helpers for deletion ---
+list_user_sessions() {
+  # Print TTYs/sessions for user (loginctl and who)
+  local u="$1"
+  echo "Active sessions for '$u':"
+  loginctl list-sessions --no-legend 2>/dev/null | awk -v user="$u" '$3==user{print "  loginctl session: "$1" ("$2")"}' || true
+  who 2>/dev/null | awk -v user="$u" '$1==user{print "  who: "$1" "$2" "$5}' || true
+}
+
+user_has_active_sessions() {
+  local u="$1"
+  if loginctl list-sessions --no-legend 2>/dev/null | awk -v user="$u" '$3==user{found=1} END{exit !found}'; then
+    return 0
+  fi
+  if who 2>/dev/null | awk -v user="$u" '$1==user{found=1} END{exit !found}'; then
+    return 0
+  fi
+  return 1
+}
+
+force_logout_user() {
+  local u="$1"
+  echo "Forcing logout of user '$u'..."
+  loginctl terminate-user "$u" 2>/dev/null || true
+  pkill -KILL -u "$u" 2>/dev/null || true
+
+  # Wait a few seconds for sessions to end
+  local i
+  for i in {1..5}; do
+    if user_has_active_sessions "$u"; then
+      sleep 1
+    else
+      break
+    fi
+  done
+
+  if user_has_active_sessions "$u"; then
+    echo "⚠️  Some sessions for '$u' may still be present, proceeding with deletion."
+  else
+    echo "✓ Sessions for '$u' terminated."
+  fi
+}
+
 # --- User deletion (after SSH config) ---
 
 delete_user_silent() {
@@ -142,10 +185,19 @@ delete_user_silent() {
     return 0
   fi
 
+  # Show active sessions and force logout (default YES)
+  if user_has_active_sessions "$USER_TO_DEL"; then
+    echo "⚠️  Detected active sessions for '$USER_TO_DEL'."
+    list_user_sessions "$USER_TO_DEL"
+    read -rp "Terminate sessions now? [Y/n]: " KILLANS
+    case "${KILLANS,,}" in
+      n|no) echo "Skipping deletion because sessions are active."; return 1 ;;
+      *)    force_logout_user "$USER_TO_DEL" ;;
+    esac
+  fi
+
   USER_HOME="$(getent passwd "$USER_TO_DEL" | cut -d: -f6)"
   echo "Deleting user '$USER_TO_DEL' (HOME: ${USER_HOME:-N/A})..."
-  loginctl terminate-user "$USER_TO_DEL" 2>/dev/null || true
-  pkill -u "$USER_TO_DEL" 2>/dev/null || true
   if userdel -r "$USER_TO_DEL"; then
     crontab -r -u "$USER_TO_DEL" 2>/dev/null || true
     if [ -n "${USER_HOME:-}" ] && [ -d "$USER_HOME" ]; then
@@ -381,7 +433,7 @@ show_menu() {
 2) Update & Upgrade System
 3) Set root password (and unlock root)
 4) Configure SSH (root login + password auth)
-5) Remove a user (prompt, default YES)
+5) Remove a user (prompt, default YES; kills active sessions)
 6) Set Timezone to Europe/Amsterdam
 7) Install Zip/Unzip + QEMU Guest Agent (+ enable getty@tty1)
 8) Install Python, pip & tools
