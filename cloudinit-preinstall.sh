@@ -1,14 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Ensure script is run as root ---
-if [ "$(id -u)" -ne 0 ]; then
-  echo "❌ This script must be run as root."
-  echo "➡️  Please run:"
-  echo "    sudo su"
-  echo "    bash $0"
-  exit 1
-fi
+# --- Config: GitHub raw URL for re-run hint ---
+INSTALL_ONE_LINER='bash -c "$(curl -fsSL https://raw.githubusercontent.com/hjongedijk/cloudinit-preinstall/main/cloudinit-preinstall.sh)"'
 
 # --- URLs for bundles ---
 FILEBROWSER_URL="https://raw.githubusercontent.com/hjongedijk/cloudinit-preinstall/main/packages/filebrowser.zip"
@@ -19,11 +13,9 @@ press_enter() {
   read -rp "Press ENTER to continue..." _ || true
 }
 
-# Track outcomes for the overview
-USER_DELETE_RESULT="skipped"
-USER_DELETED_FLAG=0
-DOCKER_ACCESS_USERNAME=""
-DOCKER_ACCESS_MODE=""   # "chmod_only" or "group+chmod"
+get_eth0_ip() {
+  ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1
+}
 
 ensure_unzip_curl() {
   if ! command -v unzip >/dev/null 2>&1; then
@@ -35,6 +27,68 @@ ensure_unzip_curl() {
     apt-get install -y curl
   fi
 }
+
+# ------------------------------
+# EARLY PATH: Not root -> only set root password + SSH, then exit with instructions
+# ------------------------------
+if [ "$(id -u)" -ne 0 ]; then
+  echo "⚠️  Running as non-root. Performing minimal setup: set root password + SSH config."
+  echo "    After that, log in as root and re-run the full installer."
+
+  # --- Set root password (via sudo) ---
+  read -srp "Enter new root password: " PW1; echo
+  read -srp "Re-enter new root password: " PW2; echo
+  if [ -z "${PW1}" ] || [ "${PW1}" != "${PW2}" ]; then
+    echo "❌ Passwords empty or do not match. Aborting."
+    exit 1
+  fi
+  if ! echo "root:${PW1}" | sudo chpasswd; then
+    echo "❌ Failed to set root password (sudo chpasswd)."
+    exit 1
+  fi
+  sudo passwd -u root 2>/dev/null || true
+  echo "✓ Root password set and root unlocked."
+
+  # --- SSH config (via sudo) ---
+  SSH_FILE="/etc/ssh/sshd_config"
+  sudo sed -i 's/^[[:space:]]*PermitRootLogin[[:space:]].*/#&/' "$SSH_FILE" || true
+  sudo sed -i 's/^[[:space:]]*PasswordAuthentication[[:space:]].*/#&/' "$SSH_FILE" || true
+  echo "PermitRootLogin yes" | sudo tee -a "$SSH_FILE" >/dev/null
+  echo "PasswordAuthentication yes" | sudo tee -a "$SSH_FILE" >/dev/null
+  sudo systemctl restart ssh || sudo systemctl restart sshd || true
+  echo "✓ SSH configured: root login + password auth enabled."
+
+  IP="$(get_eth0_ip)"
+  if [ -z "$IP" ]; then
+    IP="<your_server_ip>"
+  fi
+
+  cat <<EOF
+
+=====================================================
+NEXT STEPS
+-----------------------------------------------------
+1) Log out and log in as root using the password you just set:
+   ssh root@${IP}
+
+2) Re-run the installer:
+   ${INSTALL_ONE_LINER}
+
+3) Choose option 1 (Run ALL) or proceed step-by-step.
+=====================================================
+EOF
+  exit 0
+fi
+
+# ------------------------------
+# Full installer (running as root)
+# ------------------------------
+
+# Track outcomes for the overview
+USER_DELETE_RESULT="skipped"
+USER_DELETED_FLAG=0
+DOCKER_ACCESS_USERNAME=""
+DOCKER_ACCESS_MODE=""   # "chmod_only" or "group+chmod"
 
 # ------------------------------
 # Steps
@@ -69,7 +123,7 @@ step_ssh_config() {
     echo "PermitRootLogin yes"
     echo "PasswordAuthentication yes"
   } >> "$SSH_FILE"
-  systemctl restart ssh
+  systemctl restart ssh || systemctl restart sshd || true
   echo "✓ SSH configured and restarted."
 }
 
@@ -83,7 +137,6 @@ delete_user_silent() {
     echo "Skipping invalid username for deletion."
     return 0
   fi
-
   if ! id "$USER_TO_DEL" >/dev/null 2>&1; then
     echo "User '$USER_TO_DEL' does not exist. Skipping."
     return 0
@@ -204,6 +257,9 @@ EOF
   echo "⚠️ WARNING: tcp://0.0.0.0:2375 is INSECURE (no TLS)."
 }
 
+# Post-docker access:
+# - If a user WAS deleted earlier → ONLY chmod 666 /var/run/docker.sock
+# - Else → ask for a username, add to docker group, then chmod 666
 step_set_docker_access() {
   echo "[11] Set Docker access..."
   if [ "${USER_DELETED_FLAG}" -eq 1 ]; then
