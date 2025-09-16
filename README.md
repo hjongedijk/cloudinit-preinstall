@@ -13,12 +13,14 @@ This repository provides a fast path to deploy Debian 12/13 VMs on **Proxmox VE*
 
 ### 1) Create a Debian VM in Proxmox
 
-**Debian 12** <sub>(Source: [Community Script Link](https://community-scripts.github.io/ProxmoxVE/scripts?id=debian-vm&category=Operating+Systems))</sub>
+**Debian 12**
+<sub>(Source: [Community Script Link](https://community-scripts.github.io/ProxmoxVE/scripts?id=debian-vm&category=Operating+Systems))</sub>
 ```bash
 bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/scripts/debian-vm.sh)"
 ```
 
-**Debian 13** <sub>(Source: [Community Script Link](https://community-scripts.github.io/ProxmoxVE/scripts?id=debian-13-vm))</sub>
+**Debian 13**
+<sub>(Source: [Community Script Link](https://community-scripts.github.io/ProxmoxVE/scripts?id=debian-13-vm))</sub>
 ```bash
 bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/scripts/debian-13-vm.sh)"
 ```
