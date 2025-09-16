@@ -2,10 +2,10 @@
 
 This repository provides a fast path to deploy Debian 12/13 VMs on **Proxmox VE** and prepare them for **cloud-init** with an interactive, menu-driven preinstall script.
 
-- Creates a Debian VM using the community one-liners (Debian 12 or 13)
-- Runs `cloudinit-preinstall.sh` inside the VM to apply sane defaults
-- (Optional) Deploys **Filebrowser** and a **Monitoring** stack via Docker
-- Cleans cloud-init state so your template is ready for cloning
+- Creates a Debian VM using the community one-liners (Debian 12 or 13)  
+- Runs `cloudinit-preinstall.sh` inside the VM to apply sane defaults  
+- (Optional) Deploys **Filebrowser** and a **Monitoring** stack via Docker  
+- Cleans cloud-init state so your template is ready for cloning  
 
 ---
 
@@ -37,8 +37,8 @@ Open **Proxmox → your VM → Console (xterm.js)** and log in as `root`, then:
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/hjongedijk/cloudinit-preinstall/main/cloudinit-preinstall.sh)"
 ```
 
-- Choose **1) Run ALL steps** or run individual steps as needed.
-- At the end you’ll get a clear **installation overview** and an **optional shutdown** prompt.
+- Choose **1) Run ALL steps** or run individual steps as needed.  
+- At the end you’ll get a clear **installation overview** and an **optional shutdown** prompt.  
 
 ---
 
@@ -47,10 +47,10 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/hjongedijk/cloudinit-pre
 The script is interactive and idempotent where possible.  
 
 ### When run as **non-root**
-- Prompts to set/unlock the **root password**
-- Enables **SSH root login + password auth**
-- Restarts **SSH**
-- Prints follow-up steps and asks to logout
+- Prompts to set/unlock the **root password**  
+- Enables **SSH root login + password auth**  
+- Restarts **SSH**  
+- Prints follow-up steps and asks to logout  
 
 ### When run as **root**
 Runs full setup (via menu or run-all):
@@ -61,7 +61,7 @@ Runs full setup (via menu or run-all):
 4. 🔧 Configure SSH (`PermitRootLogin` + `PasswordAuthentication` **enabled**)  
 5. 🧹 Remove an existing user (optional, interactive), if VM only needs to have **root** user  
 6. 🕰️  Set timezone → `Europe/Amsterdam`  
-7. 🧰 Install `qemu-guest-agent`, `zip`, `unzip`, and **enable** `getty@tty1` for **Default (VNC console)** 
+7. 🧰 Install `qemu-guest-agent`, `zip`, `unzip`, and **enable** `getty@tty1` for **Default (VNC console)**  
 8. 🐍 Install Python 3, pip, venv, dev tools  
 9. 🐳 Install Docker CE + Compose plugins  
 10. 🔌 Configure Docker to listen on `unix:///var/run/docker.sock` and `tcp://0.0.0.0:2375` (**⚠️ insecure**)  
@@ -79,6 +79,7 @@ Runs full setup (via menu or run-all):
 - Docker TCP (2375) is **unsecured** — only use on trusted networks.  
 - After running, configure cloud-init in Proxmox (`user`, `password`, `ip=dhcp`) and **regenerate image**.  
 - After enabling **getty@tty1** you can safely remove the serial port and set Display → **Default (VNC console)**.  
+- ⚠️ **Security Reminder**: Always review and understand scripts before executing them on your server. Do not blindly run one-liners from the internet without inspection.  
 
 ---
 
@@ -92,7 +93,37 @@ Runs full setup (via menu or run-all):
    ```  
 4. Choose **Run ALL** (or step through interactively).  
 5. Shut down the VM when done.  
-6. Configure **cloud-init** in Proxmox and regenerate image. 
-7. Optional remove the **Serial Port (serial0)** from VM Hardware and set **Display** to Default.
-8. Convert the VM to template.
-8. VM template is now **ready for cloning & production use** 🚀  
+6. Configure **cloud-init** in Proxmox and regenerate image.  
+7. Optional remove the **Serial Port (serial0)** from VM Hardware and set **Display** to Default.  
+8. Convert the VM to template.  
+9. VM template is now **ready for cloning & production use** 🚀  
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome!  
+
+- 🪄 **Fork** the repository  
+- 🌱 **Create** a feature branch (`git checkout -b feature/my-change`)  
+- 💾 **Commit** your changes (`git commit -m "Add my feature"`)  
+- 📤 **Push** the branch (`git push origin feature/my-change`)  
+- 🔀 **Open a Pull Request**  
+
+Please keep contributions focused, and describe clearly what your change improves.  
+
+---
+
+## 📜 License
+
+This project is licensed under the **MIT License**.  
+You are free to use, modify, and distribute it, provided the license terms are respected.  
+
+---
+
+## ⚖️ Disclaimer
+
+This project is provided **as-is** without warranty of any kind.  
+The author(s) are **not responsible for any damage, data loss, misconfiguration, or security issues** resulting from the use of these scripts.  
+
+By using this repository, you agree that **you run all scripts at your own risk** and that you are responsible for reviewing them before execution.
