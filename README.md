@@ -18,7 +18,7 @@ This repository provides a fast path to deploy Debian 12/13 VMs on **Proxmox VE*
 - [🔑 Filebrowser Default Credentials](#-filebrowser-default-credentials)
 - [🤝 Contributing](#-contributing)
 - [📜 License](#-license)
-y
+
 ---
 
 ## ✅ Quick Start
