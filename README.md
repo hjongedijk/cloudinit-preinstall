@@ -100,6 +100,19 @@ Runs full setup (via menu or run-all):
 
 ---
 
+## 🔑 Filebrowser Default Credentials
+
+By default, the **Filebrowser** bundle (`/opt/filebrowser`) is initialized with this admin account:
+
+- **Username:** `admin`  
+- **Password:** `XRYCRko11zRFkL`  
+
+⚠️ **IMPORTANT:** You must change this password immediately after your first login to ensure security.  
+
+To change the password, open the Filebrowser web UI (by default exposed on port **8079**) and update the admin account credentials under the user settings.  
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome!  
