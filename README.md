@@ -9,6 +9,18 @@ This repository provides a fast path to deploy Debian 12/13 VMs on **Proxmox VE*
 
 ---
 
+## 📑 Index
+
+- [✅ Quick Start](#-quick-start)
+- [🧰 What the script does](#-what-the-script-does)
+- [⚠️ Notes & Warnings](#️-notes--warnings)
+- [📋 Example Workflow](#-example-workflow)
+- [🔑 Filebrowser Default Credentials](#-filebrowser-default-credentials)
+- [🤝 Contributing](#-contributing)
+- [📜 License](#-license)
+y
+---
+
 ## ✅ Quick Start
 
 ### 1) Create a Debian VM in Proxmox
