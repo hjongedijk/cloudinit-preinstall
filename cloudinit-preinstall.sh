@@ -185,7 +185,7 @@ step_update_upgrade() {
 step_install_base_packages() {
   title "[3] Install base packages"
   apt-get install -y sudo curl wget git unzip zip tar htop net-tools \
-                     build-essential tmux screen jq tree fail2ban
+                     build-essential tmux screen jq tree fail2ban ncdu
   ok "Base packages installed."
 }
 
@@ -442,7 +442,7 @@ run_all_steps() {
   echo "📋 INSTALLATION OVERVIEW"
   echo "====================================================="
   echo "✅ System updated & upgraded"
-  echo "✅ Base packages installed (sudo curl wget git unzip zip tar htop net-tools build-essential tmux screen jq tree fail2ban)"
+  echo "✅ Base packages installed (sudo curl wget git unzip zip tar htop net-tools build-essential tmux screen jq tree fail2ban ncdu)"
   echo "✅ SSH configured (root login + password auth)"
   echo "ℹ️  User deletion step: $USER_DELETE_RESULT"
   echo "✅ Root password set/unlocked"
