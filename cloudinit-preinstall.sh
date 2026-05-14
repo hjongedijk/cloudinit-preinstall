@@ -389,18 +389,50 @@ step_monitoring_bundle() {
 
 step_cloudinit_and_apt_clean() {
   title "[15] Cloud-init cleanup & apt clean"
-  cloud-init clean --logs || true
+
+  info "Stopping services that may hold leases/state..."
+  systemctl stop docker 2>/dev/null || true
+  systemctl stop NetworkManager 2>/dev/null || true
+  systemctl stop systemd-networkd 2>/dev/null || true
+
+  info "Removing generated cloud-init/netplan/network state..."
+  rm -f /etc/netplan/50-cloud-init.yaml || true
+  rm -f /etc/netplan/00-installer-config.yaml || true
+  rm -f /etc/systemd/network/10-cloud-init-*.network || true
+  rm -f /etc/network/interfaces.d/50-cloud-init || true
+
+  info "Removing DHCP leases and network cache..."
+  rm -f /var/lib/dhcp/* 2>/dev/null || true
+  rm -f /var/lib/NetworkManager/*lease* 2>/dev/null || true
+  rm -f /var/lib/NetworkManager/NetworkManager.state 2>/dev/null || true
+  rm -f /run/systemd/netif/leases/* 2>/dev/null || true
+  rm -rf /run/netplan/* 2>/dev/null || true
+
+  info "Cleaning cloud-init completely..."
+  cloud-init clean --logs --seed || true
   rm -rf /var/lib/cloud/* || true
   rm -f /etc/cloud/cloud.cfg.d/90_dpkg.cfg || true
+
+  info "Resetting machine-id..."
   truncate -s 0 /etc/machine-id || true
   rm -f /var/lib/dbus/machine-id || true
-  rm -f /etc/netplan/50-cloud-init.yaml || true
-  cloud-init clean || true
+
+  info "Cleaning SSH host keys so clones get unique keys..."
+  rm -f /etc/ssh/ssh_host_* || true
+
+  info "Cleaning shell history and temporary files..."
+  rm -f /root/.bash_history || true
+  history -c 2>/dev/null || true
+  rm -rf /tmp/* /var/tmp/* || true
+
+  info "Cleaning apt cache..."
   apt-get -y autoremove --purge whiptail dialog || true
   apt-get -y autoremove || true
   apt-get clean || true
   rm -rf /var/lib/apt/lists/* || true
-  ok "cloud-init cleaned and apt cache purged."
+
+  ok "Template cleanup complete."
+  warn "Power off now and convert this VM to a template. Do not boot it again before converting."
 }
 
 step_shutdown_prompt() {
